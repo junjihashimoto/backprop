@@ -5,6 +5,9 @@
 {-# LANGUAGE PatternSynonyms  #-}
 {-# LANGUAGE RankNTypes       #-}
 {-# LANGUAGE ViewPatterns     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+
 
 -- |
 -- Module      : Numeric.Backprop
@@ -1028,3 +1031,44 @@ pattern BV v <- (splitBV->v)
 #if MIN_VERSION_base(4,10,0)
 {-# COMPLETE BV #-}
 #endif
+
+data Para p a b = Para
+  { learn :: forall z. (Reifies z W, Backprop p, Backprop a, Backprop b) => BVar z p -> BVar z a -> BVar z b
+  , learnRate :: Double
+  , lossFunction :: forall z. Reifies z W => b -> BVar z b -> BVar z b
+}
+
+data Learn p a b = Learn
+  { implement :: p -> a -> b
+  , update    :: p -> a -> b -> p
+  , request   :: p -> a -> b -> a
+  }
+
+{-
+class Learner m where
+  implement' :: p -> a -> b
+  update'    :: p -> a -> b -> p
+  request'   :: p -> a -> b -> a
+-}
+
+paraToLearn :: (Num p, Fractional p, Num a, Fractional a, Backprop p, Backprop a, Backprop b) => Para p a b -> Learn p a b
+paraToLearn (Para f rate loss) = Learn
+  { implement = \p x -> E.evalBP2 f p x
+  , update    = \p x y -> p - realToFrac rate * (fst (gradBP2 (\p' x' -> loss y (f p' x')) p x))
+  , request   = \p x y -> x - realToFrac rate * (snd (gradBP2 (\p' x' -> loss y (f p' x')) p x))
+  }
+
+(+:) :: Learn p0 a b -> Learn p1 b c -> Learn (p0,p1) a c
+(+:) (Learn i0 u0 r0) (Learn i1 u1 r1) = Learn
+  { implement = \(p0,p1) x -> i1 p1 $ i0 p0 x
+  , update    = \(p0,p1) x y -> (u0 p0 x (r1 p1 (i0 p0 x) y), u1 p1 (i0 p0 x) y)
+  , request   = \(p0,p1) x y -> r0 p0 x (r1 p1 (i0 p0 x) y)
+  }
+
+(+::) :: (Backprop p0, Backprop p1, Backprop a, Backprop b, Backprop c)
+  => Para p0 a b -> Para p1 b c -> Para (p0,p1) a c
+(+::) (Para i0 u0 r0) (Para i1 u1 r1) = Para
+  { learn = \p x -> case p of T2 p0 p1 -> i1 p1 (i0 p0 x)
+  , learnRate = u1
+  , lossFunction = r1
+  }
